@@ -109,6 +109,8 @@ type Source struct {
 	RawPlatform *PlatformField `json:"platform,omitempty"`
 
 	Debug bool `json:"debug,omitempty"`
+
+	PropagateTrace bool `json:"propagate_trace,omitempty"`
 }
 
 func (source Source) Mirror() (Source, bool, error) {
@@ -217,7 +219,15 @@ func (source Source) AuthOptions(repo name.Repository, scopeActions []string) ([
 		scopes[i] = repo.Scope(action)
 	}
 
-	rt, err := transport.New(repo.Registry, auth, tr, scopes)
+	var rt http.RoundTripper = tr
+	if tp, ok := os.LookupEnv("TRACEPARENT"); source.PropagateTrace && ok {
+		rt = &traceParentTransport{
+			RoundTripper: tr,
+			TraceParent:  tp,
+		}
+	}
+
+	rt, err := transport.New(repo.Registry, auth, rt, scopes)
 	if err != nil {
 		return nil, fmt.Errorf("initialize transport: %w", err)
 	}
@@ -261,6 +271,20 @@ func (source Source) RepositoryOptions() []name.Option {
 		opts = append(opts, name.Insecure)
 	}
 	return opts
+}
+
+type traceParentTransport struct {
+	http.RoundTripper
+	TraceParent string
+}
+
+func (t traceParentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	c := req.Clone(req.Context())
+	c.Header.Set("traceparent", t.TraceParent)
+	if t.RoundTripper == nil {
+		t.RoundTripper = http.DefaultTransport
+	}
+	return t.RoundTripper.RoundTrip(c)
 }
 
 type ContentTrust struct {
